@@ -17,5 +17,4 @@ Go实现的网络通信库
 * 在不增加复杂库的前提下可以支持FreeBSD/Darwin, 方便将来用Mac作为开发用机，但不为它做性能优化。也就是说，IO multiplexing使用poll(2)和epoll(4).
 
 ## 欢迎加入
-联系：云景 hqc2010@gmail.com
 Gopher厦门QQ群：480356472
