@@ -6,9 +6,9 @@ import (
 )
 
 type Server struct {
-    conns     map[SessionID]*Conn  // Holds the outstanding conns.
-    connsLock *sync.RWMutex // Protects the conns.
-    config    Config        // Holds the configuration values.
+    conns     map[SessionID]*Conn // Holds the outstanding conns.
+    connsLock *sync.RWMutex       // Protects the conns.
+    config    Config              // Holds the configuration values.
 
     callbacks struct {
         onConnect    func(*Conn)          // Invoked on new connection.
@@ -39,7 +39,7 @@ func (serv *Server) Run() {
     for {
         co, err := listener.Accept()
         if err != nil {
-            ne, ok := err.(net.Error); ok && ne.Temporary() {
+            if ne, ok := err.(net.Error); ok && ne.Temporary() {
                 if tempDelay == 0 {
                     tempDelay = 5 * time.Millisecond
                 } else {
