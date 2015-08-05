@@ -6,9 +6,11 @@ import (
 )
 
 type Server struct {
-    conns     map[SessionID]*Conn // Holds the outstanding conns.
-    connsLock *sync.RWMutex       // Protects the conns.
-    config    Config              // Holds the configuration values.
+    config       Config              // Holds the configuration values.
+    addr         string              // Listen on port.
+    listener     *net.Listener       // Holds the listener.
+    sessions     map[SessionID]*Conn // Holds the outstanding conns.
+    sessionsLock *sync.RWMutex       // Protects the conns.
 
     callbacks struct {
         onConnect    func(*Conn)          // Invoked on new connection.
@@ -21,20 +23,32 @@ type Server struct {
 // options. If transports is nil, the DefaultTransports is used. If config is nil,
 // the DefaultConfig is used.
 func NewServer(config *Config) *Server {
+    tcpAddr, err := net.ResolveTCPAddr("tcp4", config.ListenAddr)
+    if err != nil {
+        return nil
+    }
+
     if config == nil {
         config = &DefaultConfig
     }
 
     serv := &Server{
-        config:    *config,
-        conns:     make(map[SessionID]*Conn),
-        connsLock: new(sync.RWMutex),
+        config:       *config,
+        addr:         tcpAddr,
+        sessions:     make(map[SessionID]*Conn),
+        sessionsLock: new(sync.RWMutex),
     }
 
     return serv
 }
 
 func (serv *Server) Run() {
+    ln, err := net.ListenTCP("tcp", serv.addr)
+    if err != nil {
+        serv.Log("mudoo/Run: bind tcp port failure:", err)
+        return
+    }
+
     var tempDelay time.Duration // how long to sleep on accept failure
     for {
         co, err := listener.Accept()
@@ -72,10 +86,10 @@ func (serv *Server) Broadcast(data interface{}) {
 // c. It does not care about the type of data, but it must marshallable
 // by the standard json-package.
 func (serv *Server) BroadcastExcept(c *Conn, data interface{}) {
-    serv.connsLock.RLock()
-    defer serv.connsLock.RUnlock()
+    serv.sessionsLock.RLock()
+    defer serv.sessionsLock.RUnlock()
 
-    for _, v := range serv.conns {
+    for _, v := range serv.sessions {
         if v != c {
             v.Send(data)
         }
@@ -84,9 +98,9 @@ func (serv *Server) BroadcastExcept(c *Conn, data interface{}) {
 
 // GetConn digs for a conn with fd and returns it.
 func (serv *Server) GetConn(sessid SessionID) (c *Conn) {
-    serv.connsLock.RLock()
-    c = serv.conns[sessid]
-    serv.connsLock.RUnlock()
+    serv.sessionsLock.RLock()
+    c = serv.sessions[sessid]
+    serv.sessionsLock.RUnlock()
     return
 }
 
@@ -130,9 +144,9 @@ func (serv *Server) Logf(format string, v ...interface{}) {
 // established successfully. The establised connection is passed as an
 // argument. It stores the connection and calls the user's OnConnect callback.
 func (serv *Server) doSocketConnect(c *Conn) {
-    serv.connsLock.Lock()
-    serv.conns[c.fd] = c
-    serv.connsLock.Unlock()
+    serv.sessionsLock.Lock()
+    serv.sessions[c.sessid] = c
+    serv.sessionsLock.Unlock()
 
     if fn := serv.callbacks.onConnect; fn != nil {
         fn(c)
@@ -142,9 +156,9 @@ func (serv *Server) doSocketConnect(c *Conn) {
 // OnDisconnect is invoked by a connection when the connection is considered
 // to be lost. It removes the connection and calls the user's OnDisconnect callback.
 func (serv *Server) doSocketDisconnect(c *Conn) {
-    serv.connsLock.Lock()
-    serv.conns[c.fd] = nil, false
-    serv.connsLock.Unlock()
+    serv.sessionsLock.Lock()
+    serv.sessions[c.sessid] = nil, false
+    serv.sessionsLock.Unlock()
 
     if fn := serv.callbacks.onDisconnect; fn != nil {
         fn(c)

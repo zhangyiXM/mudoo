@@ -22,6 +22,10 @@ type Config struct {
     // disconnected.
     ReconnectTimeout int64
 
+    // Listen Address
+    // For example: ":12001"
+    ListenAddr string
+
     // Codec to use.
     Codec Codec
 
@@ -35,7 +39,7 @@ var DefaultConfig = Config{
     ReadBufferSize:    2048,
     HeartbeatInterval: 10e9,
     ReconnectTimeout:  10e9,
-    Origins:           nil,
+    ListenAddr:        ":12001",
     Codec:             ProtobufCodec{},
     Logger:            DefaultLogger,
 }
