@@ -3,7 +3,6 @@ package mudoo
 import (
     "crypto/rand"
     "io"
-    "os"
 )
 
 type SessionID string
@@ -18,7 +17,7 @@ const (
 
 // NewSessionID creates a new ~random session that is SessionIDLength long and
 // consists of random characters from the SessionIDCharset.
-func NewSessionID() (sid SessionID, err os.Error) {
+func NewSessionID() (sid SessionID, err error) {
     b := make([]byte, SessionIDLength)
 
     if _, err = io.ReadFull(rand.Reader, b); err != nil {

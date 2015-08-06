@@ -15,6 +15,9 @@ type Config struct {
     // The size of the read buffer in bytes.
     ReadBufferSize int
 
+    // The size of the write buffer in bytes.
+    WriteBufferSize int
+
     // The interval between heartbeats
     HeartbeatInterval int64
 
@@ -36,7 +39,8 @@ type Config struct {
 var DefaultConfig = Config{
     MaxConnections:    0,
     QueueLength:       10,
-    ReadBufferSize:    2048,
+    ReadBufferSize:    32767,
+    WriteBufferSize:   65535,
     HeartbeatInterval: 10e9,
     ReconnectTimeout:  10e9,
     ListenAddr:        ":12001",

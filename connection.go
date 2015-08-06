@@ -1,7 +1,10 @@
 package mudoo
 
 import (
-    "encoding/binary"
+    "bytes"
+    "errors"
+    "fmt"
+    "io"
     "net"
     "os"
     "sync"
@@ -10,25 +13,32 @@ import (
 
 var (
     // ErrDestroyed is used when the connection has been disconnected (i.e. can't be used anymore).
-    ErrDestroyed = os.NewError("connection is disconnected")
+    ErrDestroyed = errors.New("connection is disconnected")
 
     // ErrQueueFull is used when the send queue is full.
-    ErrQueueFull = os.NewError("send queue is full")
+    ErrQueueFull = errors.New("send queue is full")
+
+    // ErrNotConnected is used when some action required the connection to be online,
+    // but it wasn't.
+    ErrNotConnected = errors.New("not connected")
+
+    // ErrConnected is used when some action required the connection to be offline,
+    // but it wasn't.
+    ErrConnected = errors.New("already connected")
 )
 
 // Conn represents a single session and handles its handshaking,
 // message buffering and reconnections.
 type Conn struct {
     mutex            sync.Mutex
-    socket           socket // The i/o connection that abstract the transport.
     serv             *Server
-    nc               *net.Conn
+    nc               *net.TCPConn
     sessid           SessionID
     online           bool
     lastConnected    int64
     lastDisconnected int64
     lastHeartbeat    heartbeat
-    numHeartBeats    int
+    numHeartbeats    int
     ticker           *time.Ticker
     queue            chan interface{} // Buffers the outgoing messages.
     numConns         int              // Total number of reconnects.
@@ -44,10 +54,16 @@ type Conn struct {
 
 // NewConn creates a new connection for the sio. It generates the session id and
 // prepares the internal structure for usage.
-func newConn(serv *Server, nc *net.Conn) (c *Conn, err os.Error) {
+func newConn(serv *Server, nc *net.TCPConn) (c *Conn, err error) {
     var sessid SessionID
     if sessid, err = NewSessionID(); err != nil {
         serv.Log("mudoo/newConn: NewSessionID:", err)
+        return
+    }
+
+    host, port, err := net.SplitHostPort(nc.RemoteAddr().String())
+    if err != nil {
+        serv.Log("mudoo/newConn: GetRemoteAddr:", err)
         return
     }
 
@@ -55,13 +71,23 @@ func newConn(serv *Server, nc *net.Conn) (c *Conn, err os.Error) {
         serv:          serv,
         nc:            nc,
         sessid:        sessid,
+        online:        true,
+        lastConnected: time.Now().UnixNano(),
         wakeupFlusher: make(chan byte),
         wakeupReader:  make(chan byte),
         queue:         make(chan interface{}, serv.config.QueueLength),
+        numConns:      0,
         enc:           serv.config.Codec.NewEncoder(),
+        raddr:         host,
     }
 
+    nc.SetReadBuffer(serv.config.ReadBufferSize)
+    nc.SetWriteBuffer(serv.config.WriteBufferSize)
     c.dec = serv.config.Codec.NewDecoder(&c.decBuf)
+
+    go c.keepalive()
+    go c.flusher()
+    go c.reader()
 
     return
 }
@@ -69,7 +95,7 @@ func newConn(serv *Server, nc *net.Conn) (c *Conn, err os.Error) {
 // String returns a string representation of the connection and implements the
 // fmt.Stringer interface.
 func (c *Conn) String() string {
-    return fmt.Sprintf("%v[%v]", c.fd, c.socket)
+    return fmt.Sprintf("%v[%v]", c.sessid, c.nc)
 }
 
 // RemoteAddr returns the remote network address of the connection in IP:port format
@@ -82,7 +108,7 @@ func (c *Conn) RemoteAddr() string {
 // it must be otherwise marshallable by the standard json package. If the send queue
 // has reached sio.config.QueueLength or the connection has been disconnected,
 // then the data is dropped and a an error is returned.
-func (c *Conn) Send(data interface{}) (err os.Error) {
+func (c *Conn) Send(data interface{}) (err error) {
     c.mutex.Lock()
     defer c.mutex.Unlock()
 
@@ -99,7 +125,7 @@ func (c *Conn) Send(data interface{}) (err os.Error) {
     return nil
 }
 
-func (c *Conn) Close() os.Error {
+func (c *Conn) Close() error {
     c.mutex.Lock()
 
     if c.disconnected {
@@ -110,103 +136,18 @@ func (c *Conn) Close() os.Error {
     c.disconnect()
     c.mutex.Unlock()
 
-    c.serv.onDisconnect(c)
+    c.serv.doDisconnect(c)
     return nil
 }
 
-// Handle takes over an http responseWriter/req -pair using the given Transport.
-// If the HTTP method is POST then request's data-field will be used as an incoming
-// message and the request is dropped. If the method is GET then a new socket encapsulating
-// the request is created and a new connection is establised (or the connection will be
-// reconnected). Finally, handle will wake up the reader and the flusher.
-func (c *Conn) handle(t Transport, w http.ResponseWriter, req *http.Request) (err os.Error) {
-    c.mutex.Lock()
-
-    if c.disconnected {
-        c.mutex.Unlock()
-        return ErrNotConnected
-    }
-
-    if req.Method == "POST" {
-        c.mutex.Unlock()
-
-        if msg := req.FormValue("data"); msg != "" {
-            w.Header().Set("Content-Type", "text/plain")
-            w.Write(okResponse)
-            c.receive([]byte(msg))
-        } else {
-            c.sio.Log("mudoo/conn: handle: POST missing data-field:", c)
-            err = errMissingPostData
-        }
-
-        return
-    }
-
-    didHandshake := false
-
-    s := t.newSocket()
-    err = s.accept(w, req, func() {
-        if c.socket != nil {
-            c.socket.Close()
-        }
-        c.socket = s
-        c.online = true
-        c.lastConnected = time.Nanoseconds()
-
-        if !c.handshaked {
-            // the connection has not been handshaked yet.
-            if err = c.handshake(); err != nil {
-                c.sio.Log("mudoo/conn: handle/handshake:", err, c)
-                c.socket.Close()
-                return
-            }
-
-            c.raddr = req.RemoteAddr
-            c.handshaked = true
-            didHandshake = true
-
-            go c.keepalive()
-            go c.flusher()
-            go c.reader()
-
-            c.sio.Log("mudoo/conn: connected:", c)
-        } else {
-            c.sio.Log("mudoo/conn: reconnected:", c)
-        }
-
-        c.numConns++
-
-        select {
-        case c.wakeupFlusher <- 1:
-        default:
-        }
-
-        select {
-        case c.wakeupReader <- 1:
-        default:
-        }
-
-        if didHandshake {
-            c.mutex.Unlock()
-            c.sio.onConnect(c)
-        }
-    })
-
-    if !didHandshake {
-        c.mutex.Unlock()
-    }
-
-    return
-}
-
 // Handshake sends the handshake to the socket.
-func (c *Conn) handshake() os.Error {
-    return c.enc.Encode(c.socket, handshake(c.sessionid))
+func (c *Conn) handshake() error {
+    return c.enc.Encode(c.nc, handshake(c.sessid))
 }
 
 func (c *Conn) disconnect() {
-    c.sio.Log("mudoo/conn: disconnected:", c)
-    c.socket.Close()
+    c.serv.Log("mudoo/conn: disconnected:", c)
+    c.nc.Close()
     c.disconnected = true
     close(c.wakeupFlusher)
     close(c.wakeupReader)
@@ -221,7 +162,7 @@ func (c *Conn) receive(data []byte) {
     c.decBuf.Write(data)
     msgs, err := c.dec.Decode()
     if err != nil {
-        c.sio.Log("sio/conn: receive/decode:", err, c)
+        c.serv.Log("mudoo/conn: receive/decode:", err, c)
         return
     }
 
@@ -229,13 +170,13 @@ func (c *Conn) receive(data []byte) {
         if hb, ok := m.heartbeat(); ok {
             c.lastHeartbeat = hb
         } else {
-            c.sio.onMessage(c, m)
+            c.serv.doMessageReceived(c, m)
         }
     }
 }
 
 func (c *Conn) keepalive() {
-    c.ticker = time.NewTicker(c.sio.config.HeartbeatInterval)
+    c.ticker = time.NewTicker(time.Duration(c.serv.config.HeartbeatInterval) * time.Second)
     defer c.ticker.Stop()
 
 Loop:
@@ -247,7 +188,7 @@ Loop:
             return
         }
 
-        if (!c.online && t-c.lastDisconnected > c.sio.config.ReconnectTimeout) || int(c.lastHeartbeat) < c.numHeartbeats {
+        if (!c.online && (time.Now().UnixNano()-c.lastDisconnected > c.serv.config.ReconnectTimeout)) || int(c.lastHeartbeat) < c.numHeartbeats {
             c.disconnect()
             c.mutex.Unlock()
             break
@@ -258,7 +199,7 @@ Loop:
         select {
         case c.queue <- heartbeat(c.numHeartbeats):
         default:
-            c.sio.Log("sio/keepalive: unable to queue heartbeat. fail now. TODO: FIXME", c)
+            c.serv.Log("mudoo/keepalive: unable to queue heartbeat. fail now. TODO: FIXME", c)
             c.disconnect()
             c.mutex.Unlock()
             break Loop
@@ -267,7 +208,7 @@ Loop:
         c.mutex.Unlock()
     }
 
-    c.sio.onDisconnect(c)
+    c.serv.doDisconnect(c)
 }
 
 // Flusher waits for messages on the queue. It then
@@ -282,7 +223,7 @@ Loop:
 // simultaneously.
 func (c *Conn) flusher() {
     buf := new(bytes.Buffer)
-    var err os.Error
+    var err error
     var msg interface{}
     var n int
 
@@ -294,7 +235,7 @@ func (c *Conn) flusher() {
         if err == nil {
 
         DrainLoop:
-            for n < c.sio.config.QueueLength {
+            for n < c.serv.config.QueueLength {
                 select {
                 case msg = <-c.queue:
                     n++
@@ -308,7 +249,7 @@ func (c *Conn) flusher() {
             }
         }
         if err != nil {
-            c.sio.Logf("sio/conn: flusher/encode: lost %d messages (%d bytes): %s %s", n, buf.Len(), err, c)
+            c.serv.Logf("mudoo/conn: flusher/encode: lost %d messages (%d bytes): %s %s", n, buf.Len(), err, c)
             continue
         }
 
@@ -316,7 +257,7 @@ func (c *Conn) flusher() {
         for {
             for {
                 c.mutex.Lock()
-                _, err = buf.WriteTo(c.socket)
+                _, err = buf.WriteTo(c.nc)
                 c.mutex.Unlock()
 
                 if err == nil {
@@ -339,22 +280,22 @@ func (c *Conn) flusher() {
 // call the c.disconnect method and start waiting for the next event on the
 // c.wakeupReader channel.
 func (c *Conn) reader() {
-    buf := make([]byte, c.sio.config.ReadBufferSize)
+    buf := make([]byte, c.serv.config.ReadBufferSize)
 
     for {
         c.mutex.Lock()
-        socket := c.socket
+        nc := c.nc
         c.mutex.Unlock()
 
         for {
-            nr, err := socket.Read(buf)
+            nr, err := c.nc.Read(buf)
             if err != nil {
                 if err != os.EAGAIN {
                     if neterr, ok := err.(*net.OpError); ok && neterr.Timeout() {
-                        c.sio.Log("sio/conn: lost connection (timeout):", c)
+                        c.serv.Log("mudoo/conn: lost connection (timeout):", c)
                         socket.Write(emptyResponse)
                     } else {
-                        c.sio.Log("sio/conn: lost connection:", c)
+                        c.serv.Log("mudoo/conn: lost connection:", c)
                     }
                     break
                 }
@@ -366,9 +307,9 @@ func (c *Conn) reader() {
         }
 
         c.mutex.Lock()
-        c.lastDisconnected = time.Nanoseconds()
+        c.lastDisconnected = time.Now().UnixNano()
         socket.Close()
-        if c.socket == socket {
+        if c.nc == socket {
             c.online = false
         }
         c.mutex.Unlock()

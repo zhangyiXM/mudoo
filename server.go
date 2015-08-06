@@ -1,14 +1,16 @@
 package mudoo
 
 import (
+    "log"
     "net"
     "sync"
+    "time"
 )
 
 type Server struct {
     config       Config              // Holds the configuration values.
-    addr         string              // Listen on port.
-    listener     *net.Listener       // Holds the listener.
+    addr         *net.TCPAddr        // Listen on port.
+    listener     *net.TCPListener    // Holds the listener.
     sessions     map[SessionID]*Conn // Holds the outstanding conns.
     sessionsLock *sync.RWMutex       // Protects the conns.
 
@@ -49,9 +51,11 @@ func (serv *Server) Run() {
         return
     }
 
+    serv.listener = ln
+
     var tempDelay time.Duration // how long to sleep on accept failure
     for {
-        co, err := listener.Accept()
+        co, err := ln.AcceptTCP()
         if err != nil {
             if ne, ok := err.(net.Error); ok && ne.Temporary() {
                 if tempDelay == 0 {
@@ -62,18 +66,19 @@ func (serv *Server) Run() {
                 if max := 1 * time.Second; tempDelay > max {
                     tempDelay = max
                 }
-                log.Printf("%v: Accept error: %v; retrying in %v", name, err, tempDelay)
+                log.Printf("mudoo: Accept error: %v; retrying in %v", err, tempDelay)
                 time.Sleep(tempDelay)
                 continue
             }
-            return err
+            return
         }
         tempDelay = 0
+
         c, err := newConn(serv, co)
         if err != nil {
             return
         }
-        serv.doSocketConnect(conn)
+        serv.doConnect(c)
     }
 }
 
@@ -106,7 +111,7 @@ func (serv *Server) GetConn(sessid SessionID) (c *Conn) {
 
 // OnConnect sets f to be invoked when a new connection is established. It passes
 // the established connection as an argument to the callback.
-func (serv *Server) OnConnect(f func(*Conn)) os.Error {
+func (serv *Server) OnConnect(f func(*Conn)) error {
     serv.callbacks.onConnect = f
     return nil
 }
@@ -115,7 +120,7 @@ func (serv *Server) OnConnect(f func(*Conn)) os.Error {
 // It passes the established connection as an argument to the callback. After
 // disconnection the connection is considered to be destroyed, and it should not
 // be used anymore.
-func (serv *Server) OnDisconnect(f func(*Conn)) os.Error {
+func (serv *Server) OnDisconnect(f func(*Conn)) error {
     serv.callbacks.onDisconnect = f
     return nil
 }
@@ -123,8 +128,8 @@ func (serv *Server) OnDisconnect(f func(*Conn)) os.Error {
 // OnMessage sets f to be invoked when a message arrives. It passes the
 // established connection along with the received message as arguments
 // to the callback.
-func (serv *Server) OnMessage(f func(*Conn, Message)) os.Error {
-    serv.callbacks.OnMessage = f
+func (serv *Server) OnMessage(f func(*Conn, Message)) error {
+    serv.callbacks.onMessage = f
     return nil
 }
 
@@ -143,7 +148,7 @@ func (serv *Server) Logf(format string, v ...interface{}) {
 // OnConnect is invoked by a connection when a new connection has been
 // established successfully. The establised connection is passed as an
 // argument. It stores the connection and calls the user's OnConnect callback.
-func (serv *Server) doSocketConnect(c *Conn) {
+func (serv *Server) doConnect(c *Conn) {
     serv.sessionsLock.Lock()
     serv.sessions[c.sessid] = c
     serv.sessionsLock.Unlock()
@@ -155,9 +160,9 @@ func (serv *Server) doSocketConnect(c *Conn) {
 
 // OnDisconnect is invoked by a connection when the connection is considered
 // to be lost. It removes the connection and calls the user's OnDisconnect callback.
-func (serv *Server) doSocketDisconnect(c *Conn) {
+func (serv *Server) doDisconnect(c *Conn) {
     serv.sessionsLock.Lock()
-    serv.sessions[c.sessid] = nil, false
+    delete(serv.sessions, c.sessid)
     serv.sessionsLock.Unlock()
 
     if fn := serv.callbacks.onDisconnect; fn != nil {
