@@ -4,9 +4,7 @@ import (
     "bytes"
     "errors"
     "fmt"
-    "io"
     "net"
-    "os"
     "sync"
     "time"
 )
@@ -25,6 +23,8 @@ var (
     // ErrConnected is used when some action required the connection to be offline,
     // but it wasn't.
     ErrConnected = errors.New("already connected")
+
+    emptyResponse = []byte{}
 )
 
 // Conn represents a single session and handles its handshaking,
@@ -262,8 +262,6 @@ func (c *Conn) flusher() {
 
                 if err == nil {
                     break FlushLoop
-                } else if err != os.EAGAIN {
-                    break
                 }
             }
 
@@ -284,21 +282,19 @@ func (c *Conn) reader() {
 
     for {
         c.mutex.Lock()
-        nc := c.nc
+        socket := c.nc
         c.mutex.Unlock()
 
         for {
             nr, err := c.nc.Read(buf)
             if err != nil {
-                if err != os.EAGAIN {
-                    if neterr, ok := err.(*net.OpError); ok && neterr.Timeout() {
-                        c.serv.Log("mudoo/conn: lost connection (timeout):", c)
-                        socket.Write(emptyResponse)
-                    } else {
-                        c.serv.Log("mudoo/conn: lost connection:", c)
-                    }
-                    break
+                if neterr, ok := err.(*net.OpError); ok && neterr.Timeout() {
+                    c.serv.Log("mudoo/conn: lost connection (timeout):", c)
+                    socket.Write(emptyResponse)
+                } else {
+                    c.serv.Log("mudoo/conn: lost connection:", c)
                 }
+                break
             } else if nr < 0 {
                 break
             } else if nr > 0 {

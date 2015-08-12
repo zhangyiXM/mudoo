@@ -15,9 +15,9 @@ type Server struct {
     sessionsLock *sync.RWMutex       // Protects the conns.
 
     callbacks struct {
-        onConnect    func(*Conn)          // Invoked on new connection.
-        onDisconnect func(*Conn)          // Invoked on a lost connection.
-        onMessage    func(*Conn, Message) // Invoked on a message.
+        onConnect    func(*Conn)                 // Invoked on new connection.
+        onDisconnect func(*Conn)                 // Invoked on a lost connection.
+        onMessage    func(*Conn, *Buffer, int64) // Invoked on a message.
     }
 }
 

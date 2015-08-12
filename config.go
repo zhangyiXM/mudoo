@@ -44,6 +44,6 @@ var DefaultConfig = Config{
     HeartbeatInterval: 10e9,
     ReconnectTimeout:  10e9,
     ListenAddr:        ":12001",
-    Codec:             ProtobufCodec{},
+    Codec:             GPBCodec{},
     Logger:            DefaultLogger,
 }
