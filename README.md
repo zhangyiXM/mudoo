@@ -16,5 +16,45 @@ Go实现的网络通信库
 * 争取全部代码在1000行以内（不含测试）.
 * 在不增加复杂库的前提下可以支持FreeBSD/Darwin, 方便将来用Mac作为开发用机，但不为它做性能优化。也就是说，IO multiplexing使用poll(2)和epoll(4).
 
+## 示例
+
+    package main
+
+    import (
+        "log"
+        
+        "github.com/huangqingcheng/mudoo"
+    )
+
+    func main() {
+        serv := mudoo.NewServer(nil)
+
+        // when a client connects - send it the buffer and broadcast an annoucement
+        serv.OnConnect(func(c *mudoo.Conn) {
+            // payload := pbd.Chatd_Announcement{}
+            // payload.Text = "connected: " + c.String()
+            // serv.Broadcast(mudoo.Message{ProtoID: 20001, Body: &payload})
+
+            log.Println("connected:", c.String())
+        })
+
+        // when a client disconnects - send an announcement
+        serv.OnDisconnect(func(c *mudoo.Conn) {
+            // payload := pbd.Chatd_Announcement{}
+            // payload.Text = "disconnected: " + c.String()
+            // serv.Broadcast(mudoo.Message{ProtoID: 20001, Body: &payload})
+
+            log.Println("disconnected:", c.String())
+        })
+
+        // when a client send a message - broadcast and store it
+        serv.OnMessage(func(c *mudoo.Conn, msg mudoo.Message) {
+            // TODO: 接收消息处理
+        })
+
+        serv.Run()
+    }
+
+
 ## 欢迎加入
 Gopher厦门QQ群：480356472
