@@ -4,20 +4,23 @@ import (
     "log"
     "net"
     "sync"
+    "sync/atomic"
     "time"
 )
 
 type Server struct {
-    config       Config              // Holds the configuration values.
-    addr         *net.TCPAddr        // Listen on port.
-    listener     *net.TCPListener    // Holds the listener.
-    sessions     map[SessionID]*Conn // Holds the outstanding conns.
-    sessionsLock *sync.RWMutex       // Protects the conns.
+    fd           uint32           // Holds the fd of conns.
+    config       Config           // Holds the configuration values.
+    addr         *net.TCPAddr     // Listen on port.
+    listener     *net.TCPListener // Holds the listener.
+    sessions     map[uint32]*Conn // Holds the outstanding conns.
+    sessionsLock *sync.RWMutex    // Protects the conns.
+    codec        *GPBCodec
 
     callbacks struct {
-        onConnect    func(*Conn)                 // Invoked on new connection.
-        onDisconnect func(*Conn)                 // Invoked on a lost connection.
-        onMessage    func(*Conn, *Buffer, int64) // Invoked on a message.
+        onConnect    func(*Conn)          // Invoked on new connection.
+        onDisconnect func(*Conn)          // Invoked on a lost connection.
+        onMessage    func(*Conn, Message) // Invoked on a message.
     }
 }
 
@@ -25,20 +28,21 @@ type Server struct {
 // options. If transports is nil, the DefaultTransports is used. If config is nil,
 // the DefaultConfig is used.
 func NewServer(config *Config) *Server {
+    if config == nil {
+        config = &DefaultConfig
+    }
+
     tcpAddr, err := net.ResolveTCPAddr("tcp4", config.ListenAddr)
     if err != nil {
         return nil
     }
 
-    if config == nil {
-        config = &DefaultConfig
-    }
-
     serv := &Server{
         config:       *config,
         addr:         tcpAddr,
-        sessions:     make(map[SessionID]*Conn),
+        sessions:     make(map[uint32]*Conn),
         sessionsLock: new(sync.RWMutex),
+        codec:        NewGPBCodec(),
     }
 
     return serv
@@ -74,7 +78,8 @@ func (serv *Server) Run() {
         }
         tempDelay = 0
 
-        c, err := newConn(serv, co)
+        fd := atomic.AddUint32(&serv.fd, 1)
+        c, err := newConn(serv, fd, co)
         if err != nil {
             return
         }
@@ -83,14 +88,14 @@ func (serv *Server) Run() {
 }
 
 // Broadcast schedules data to be sent to each connection.
-func (serv *Server) Broadcast(data interface{}) {
+func (serv *Server) Broadcast(data Message) {
     serv.BroadcastExcept(nil, data)
 }
 
 // BroadcastExcept schedules data to be sent to each connection except
 // c. It does not care about the type of data, but it must marshallable
 // by the standard json-package.
-func (serv *Server) BroadcastExcept(c *Conn, data interface{}) {
+func (serv *Server) BroadcastExcept(c *Conn, data Message) {
     serv.sessionsLock.RLock()
     defer serv.sessionsLock.RUnlock()
 
@@ -102,7 +107,7 @@ func (serv *Server) BroadcastExcept(c *Conn, data interface{}) {
 }
 
 // GetConn digs for a conn with fd and returns it.
-func (serv *Server) GetConn(sessid SessionID) (c *Conn) {
+func (serv *Server) GetConn(sessid uint32) (c *Conn) {
     serv.sessionsLock.RLock()
     c = serv.sessions[sessid]
     serv.sessionsLock.RUnlock()
@@ -150,7 +155,7 @@ func (serv *Server) Logf(format string, v ...interface{}) {
 // argument. It stores the connection and calls the user's OnConnect callback.
 func (serv *Server) doConnect(c *Conn) {
     serv.sessionsLock.Lock()
-    serv.sessions[c.sessid] = c
+    serv.sessions[c.fd] = c
     serv.sessionsLock.Unlock()
 
     if fn := serv.callbacks.onConnect; fn != nil {
@@ -162,7 +167,7 @@ func (serv *Server) doConnect(c *Conn) {
 // to be lost. It removes the connection and calls the user's OnDisconnect callback.
 func (serv *Server) doDisconnect(c *Conn) {
     serv.sessionsLock.Lock()
-    delete(serv.sessions, c.sessid)
+    delete(serv.sessions, c.fd)
     serv.sessionsLock.Unlock()
 
     if fn := serv.callbacks.onDisconnect; fn != nil {

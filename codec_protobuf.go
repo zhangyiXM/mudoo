@@ -16,28 +16,27 @@ func NewGPBCodec() *GPBCodec {
     return codec
 }
 
-func (codec *GPBCodec) Send(conn *Conn, pid uint16, message proto.Message) {
-    raw, err := proto.Marshal(message)
+func (codec *GPBCodec) Send(conn *Conn, body Message) error {
+    raw, err := proto.Marshal(body.Body)
     if err != nil {
-        return
+        return err
     }
 
-    var n int
     var size int = len(raw)
 
     writer := Writer()
     writer.WriteU16(uint16(size + 2))
-    writer.WriteU16(pid)
+    writer.WriteU16(body.ProtoID)
     if size > 0 {
-        writer.WriteRawBytes(payload)
+        writer.WriteRawBytes(raw)
     }
 
-    conn.Send(writer.Data())
-
-    n, err = dst.Write(writer.Data())
+    _, err = conn.nc.Write(writer.Data())
     if err != nil {
-        return
+        return err
     }
+
+    return nil
 }
 
 func (codec *GPBCodec) RegisterCallback(pid uint16, prototype proto.Message, callback func(proto.Message)) {
