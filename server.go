@@ -6,6 +6,8 @@ import (
     "sync"
     "sync/atomic"
     "time"
+
+    "github.com/golang/protobuf/proto"
 )
 
 type Server struct {
@@ -18,9 +20,8 @@ type Server struct {
     codec        *GPBCodec
 
     callbacks struct {
-        onConnect    func(*Conn)          // Invoked on new connection.
-        onDisconnect func(*Conn)          // Invoked on a lost connection.
-        onMessage    func(*Conn, Message) // Invoked on a message.
+        onConnect    func(*Conn) // Invoked on new connection.
+        onDisconnect func(*Conn) // Invoked on a lost connection.
     }
 }
 
@@ -133,8 +134,9 @@ func (serv *Server) OnDisconnect(f func(*Conn)) error {
 // OnMessage sets f to be invoked when a message arrives. It passes the
 // established connection along with the received message as arguments
 // to the callback.
-func (serv *Server) OnMessage(f func(*Conn, Message)) error {
-    serv.callbacks.onMessage = f
+func (serv *Server) OnMessage(protoid uint16, prototype proto.Message, callback func(*Conn, proto.Message)) error {
+    codec := serv.config.Codec
+    codec.RegisterCallback(protoid, prototype, callback)
     return nil
 }
 
@@ -172,13 +174,5 @@ func (serv *Server) doDisconnect(c *Conn) {
 
     if fn := serv.callbacks.onDisconnect; fn != nil {
         fn(c)
-    }
-}
-
-// OnMessage is invoked by a connection when a new message arrives. It passes
-// this message to the user's OnMessage callback.
-func (serv *Server) doMessageReceived(c *Conn, msg Message) {
-    if fn := serv.callbacks.onMessage; fn != nil {
-        fn(c, msg)
     }
 }
