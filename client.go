@@ -37,26 +37,25 @@ func NewClient() *Client {
     return c
 }
 
-func (c *Client) Dial(listenAddr string) error {
+func (c *Client) Dial(listenAddr string) {
     if c.connected {
-        return ErrConnected
+        return
     }
 
     tcpAddr, err := net.ResolveTCPAddr("tcp4", listenAddr)
     if err != nil {
-        return err
+        return
     }
 
     conn, err := net.DialTCP("tcp", nil, tcpAddr)
     if err != nil {
-        return err
+        return
     }
 
     c.nc = conn
     c.connected = true
 
-    go c.reader()
-    return nil
+    c.reader()
 }
 
 func (c *Client) reader() {
