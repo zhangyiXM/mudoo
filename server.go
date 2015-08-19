@@ -25,9 +25,8 @@ type Server struct {
     }
 }
 
-// NewServer creates a new socket server with chosen transports and configuration
-// options. If transports is nil, the DefaultTransports is used. If config is nil,
-// the DefaultConfig is used.
+// NewServer creates a new socket server with chosen configuration
+// options. If config is nil, the DefaultConfig is used.
 func NewServer(config *Config) *Server {
     if config == nil {
         config = &DefaultConfig
@@ -94,8 +93,7 @@ func (serv *Server) Broadcast(data Message) {
 }
 
 // BroadcastExcept schedules data to be sent to each connection except
-// c. It does not care about the type of data, but it must marshallable
-// by the standard json-package.
+// c. Argument data must be Message type
 func (serv *Server) BroadcastExcept(c *Conn, data Message) {
     serv.sessionsLock.RLock()
     defer serv.sessionsLock.RUnlock()

@@ -89,10 +89,9 @@ func (c *Conn) RemoteAddr() string {
 }
 
 // Send queues data for a delivery. It is totally content agnostic with one exception:
-// the given data must be one of the following: a handshake, a heartbeat, an int, a string or
-// it must be otherwise marshallable by the standard json package. If the send queue
+// the given data must be marshallable by the standard protobuf package. If the queue to send
 // has reached sio.config.QueueLength or the connection has been disconnected,
-// then the data is dropped and a an error is returned.
+// then the data is dropped and an error is returned.
 func (c *Conn) Send(data Message) error {
     c.mutex.Lock()
     defer c.mutex.Unlock()
