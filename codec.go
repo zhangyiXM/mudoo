@@ -62,7 +62,14 @@ func (codec *GPBCodec) RegisterCallback(pid uint16, prototype proto.Message, cal
 
 func (codec *GPBCodec) OnMessage(conn *Conn, buf *Buffer, receiveTime int64) {
 
-    pid, raw, err := buf.ReadMessageBytes()
+    // header
+    size, err := buf.ReadU16()
+    if err != nil {
+        return
+    }
+
+    // pid
+    pid, err := buf.ReadU16()
     if err != nil {
         return
     }
@@ -75,6 +82,11 @@ func (codec *GPBCodec) OnMessage(conn *Conn, buf *Buffer, receiveTime int64) {
 
     prototype := codec.prototypes[pid]
     if prototype != nil {
+        raw, err := buf.ReadSizedBytes(int(size - 2))
+        if err != nil {
+            return
+        }
+
         clone := proto.Clone(prototype)
         err = proto.Unmarshal(raw, clone)
         if err != nil {
@@ -85,4 +97,5 @@ func (codec *GPBCodec) OnMessage(conn *Conn, buf *Buffer, receiveTime int64) {
     } else {
         callback(conn, nil)
     }
+
 }

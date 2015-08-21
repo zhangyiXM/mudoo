@@ -9,7 +9,6 @@ const (
     BUFFER_MAX_CAPACITY = 65535 // 缓存包最大长度
     BUFFER_POOL_SIZE    = 10000 // 缓存包对象池大小
     LENGTH_FRAME_SIZE   = 2     // 长度标识头占用字节数
-    PID_FRAME_SIZE      = 2     // proto包类型标识占用字节数
 )
 
 var (
@@ -79,22 +78,14 @@ func (buf *Buffer) ReadBytes() (ret []byte, err error) {
     return
 }
 
-func (buf *Buffer) ReadMessageBytes() (pid uint16, ret []byte, err error) {
-    if (buf.pos + LENGTH_FRAME_SIZE) > len(buf.data) {
-        err = errors.New("read bytes header failed")
-        return
-    }
-
-    size, _ := buf.ReadU16()
-    if (buf.pos + int(size)) > len(buf.data) {
+func (buf *Buffer) ReadSizedBytes(size int) (ret []byte, err error) {
+    if (buf.pos + size) > len(buf.data) {
         err = errors.New("read bytes data failed")
         return
     }
 
-    pid, _ = buf.ReadU16()
-
-    ret = buf.data[buf.pos : buf.pos+int(size)-PID_FRAME_SIZE]
-    buf.pos += int(size)
+    ret = buf.data[buf.pos : buf.pos+size]
+    buf.pos += size
     return
 }
 
