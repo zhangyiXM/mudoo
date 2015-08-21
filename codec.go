@@ -97,5 +97,4 @@ func (codec *GPBCodec) OnMessage(conn *Conn, buf *Buffer, receiveTime int64) {
     } else {
         callback(conn, nil)
     }
-
 }
